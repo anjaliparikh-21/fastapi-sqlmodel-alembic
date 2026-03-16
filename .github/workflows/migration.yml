@@ -1,0 +1,63 @@
+name: 3 - PostgreSQL Migration
+
+on:
+  workflow_run:
+    workflows: ["2 - Build and Push Image"]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  db-migrate:
+    name: Run Alembic Migration (BEFORE deploy)
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    permissions:
+      contents: read
+      id-token: write
+
+    env:
+      IMAGE: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/cipher-api-repo/cipher-api
+      REGION: us-central1
+      DB_INSTANCE: askcipher-devops-490323:us-central1:cipher-db
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Create or update migration Cloud Run Job
+        run: |
+          gcloud run jobs create cipher-migration-job \
+            --image=${{ env.IMAGE }}:${{ github.event.workflow_run.head_sha }} \
+            --region=${{ env.REGION }} \
+            --set-cloudsql-instances=${{ env.DB_INSTANCE }} \
+            --set-env-vars="DATABASE_URL=postgresql+asyncpg://cipher_user:${{ secrets.DB_PASSWORD }}@/cipher_db?host=/cloudsql/${{ env.DB_INSTANCE }}" \
+            --command="alembic" \
+            --args="upgrade,head" \
+            --max-retries=1 \
+            --project=${{ secrets.GCP_PROJECT_ID }} || \
+          gcloud run jobs update cipher-migration-job \
+            --image=${{ env.IMAGE }}:${{ github.event.workflow_run.head_sha }} \
+            --region=${{ env.REGION }} \
+            --set-cloudsql-instances=${{ env.DB_INSTANCE }} \
+            --set-env-vars="DATABASE_URL=postgresql+asyncpg://cipher_user:${{ secrets.DB_PASSWORD }}@/cipher_db?host=/cloudsql/${{ env.DB_INSTANCE }}" \
+            --command="alembic" \
+            --args="upgrade,head" \
+            --project=${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Execute migration and wait for completion
+        run: |
+          gcloud run jobs execute cipher-migration-job \
+            --region=${{ env.REGION }} \
+            --wait \
+            --project=${{ secrets.GCP_PROJECT_ID }}
+          echo "Migration completed successfully!"
+
+      - name: Confirm migration succeeded
+        run: echo "DB migration passed - safe to deploy"

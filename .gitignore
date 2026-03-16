@@ -1,2 +1,8 @@
-__pycache__
-env
+__pycache__/
+*.pyc
+.env
+gcp-key.json
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl

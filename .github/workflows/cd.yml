@@ -1,0 +1,73 @@
+name: 4 - Deploy to Cloud Run
+
+on:
+  workflow_run:
+    workflows: ["3 - PostgreSQL Migration"]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  deploy:
+    name: Deploy to Cloud Run + Smoke Test
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    permissions:
+      contents: read
+      id-token: write
+
+    env:
+      IMAGE: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/cipher-api-repo/cipher-api
+      REGION: us-central1
+      SERVICE_NAME: cipher-api
+      DB_INSTANCE: askcipher-devops-490323:us-central1:cipher-db
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image=${{ env.IMAGE }}:${{ github.event.workflow_run.head_sha }} \
+            --region=${{ env.REGION }} \
+            --platform=managed \
+            --allow-unauthenticated \
+            --add-cloudsql-instances=${{ env.DB_INSTANCE }} \
+            --set-env-vars="DATABASE_URL=postgresql+asyncpg://cipher_user:${{ secrets.DB_PASSWORD }}@/cipher_db?host=/cloudsql/${{ env.DB_INSTANCE }}" \
+            --project=${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Get deployed service URL
+        id: get-url
+        run: |
+          URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+            --region=${{ env.REGION }} \
+            --format='value(status.url)' \
+            --project=${{ secrets.GCP_PROJECT_ID }})
+          echo "url=$URL" >> $GITHUB_OUTPUT
+          echo "Deployed to: $URL"
+
+      - name: Smoke test - /healthz must return 200
+        run: |
+          curl -f "${{ steps.get-url.outputs.url }}/healthz" || exit 1
+          echo "Smoke test PASSED!"
+
+      - name: Smoke test - /ping must return 200
+        run: |
+          curl -f "${{ steps.get-url.outputs.url }}/ping" || exit 1
+          echo "Ping test PASSED!"
+
+      - name: Deployment summary
+        run: |
+          echo "================================"
+          echo "Deployment complete!"
+          echo "Service : ${{ env.SERVICE_NAME }}"
+          echo "URL     : ${{ steps.get-url.outputs.url }}"
+          echo "Image   : ${{ env.IMAGE }}:${{ github.event.workflow_run.head_sha }}"
+          echo "================================"
