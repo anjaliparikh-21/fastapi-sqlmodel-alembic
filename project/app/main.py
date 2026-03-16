@@ -27,3 +27,7 @@ async def add_song(song: SongCreate, session: AsyncSession = Depends(get_session
     await session.commit()
     await session.refresh(song)
     return song
+
+@app.get("/healthz")
+async def health_check():
+    return {"status": "ok"}
